@@ -2,137 +2,218 @@ package com.github.carlwilk32;
 
 import com.badlogic.gdx.ApplicationAdapter;
 import com.badlogic.gdx.Gdx;
-import com.badlogic.gdx.Input;
 import com.badlogic.gdx.audio.Music;
 import com.badlogic.gdx.audio.Sound;
+import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.graphics.g2d.Animation;
+import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.graphics.g2d.SpriteBatch;
+import com.badlogic.gdx.graphics.g2d.TextureRegion;
+import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
 import com.badlogic.gdx.math.MathUtils;
 import com.badlogic.gdx.math.Rectangle;
-import com.badlogic.gdx.math.Vector3;
+import com.badlogic.gdx.math.Vector2;
 import com.badlogic.gdx.utils.Array;
-import com.badlogic.gdx.utils.ScreenUtils;
-import com.badlogic.gdx.utils.TimeUtils;
-
-import java.util.Iterator;
 
 public class Main extends ApplicationAdapter {
-    private Texture dropImage;
-    private Texture bucketImage;
-    private Sound dropSound;
-    private Music rainMusic;
+    private static final float PLANE_JUMP_IMPULSE = 350;
+    private static final float GRAVITY = -20;
+    private static final float PLANE_VELOCITY_X = 200;
+    private static final float PLANE_START_Y = 240;
+    private static final float PLANE_START_X = 50;
+    ShapeRenderer shapeRenderer;
+    SpriteBatch batch;
+    OrthographicCamera camera;
+    OrthographicCamera uiCamera;
+    Texture background;
+    TextureRegion ground;
+    float groundOffsetX = 0;
+    TextureRegion ceiling;
+    TextureRegion rock;
+    TextureRegion rockDown;
+    Animation<TextureRegion> plane;
+    TextureRegion ready;
+    TextureRegion gameOver;
+    BitmapFont font;
 
-    private OrthographicCamera camera;
-    private SpriteBatch batch;
-    private Rectangle bucket;
+    Vector2 planePosition = new Vector2();
+    Vector2 planeVelocity = new Vector2();
+    float planeStateTime = 0;
+    Vector2 gravity = new Vector2();
+    Array<Rock> rocks = new Array<Rock>();
 
-    private Array<Rectangle> raindrops;
-    private long lastDropTime;
+    GameState gameState = GameState.Start;
+    int score = 0;
+    Rectangle rect1 = new Rectangle();
+    Rectangle rect2 = new Rectangle();
 
+    Music music;
+    Sound explode;
 
     @Override
     public void create() {
-        // load the images for the droplet and the bucket, 64x64 pixels each
-        dropImage = new Texture(Gdx.files.internal("droplet.png"));
-        bucketImage = new Texture(Gdx.files.internal("bucket.png"));
-
-        // load the drop sound effect and the rain background "music"
-        dropSound = Gdx.audio.newSound(Gdx.files.internal("drop.wav"));
-        rainMusic = Gdx.audio.newMusic(Gdx.files.internal("rain.mp3"));
-
-        // start the playback of the background music immediately
-        rainMusic.setLooping(true);
-        rainMusic.play();
-
-        // create the camera and the SpriteBatch
+        shapeRenderer = new ShapeRenderer();
+        batch = new SpriteBatch();
         camera = new OrthographicCamera();
         camera.setToOrtho(false, 800, 480);
-        batch = new SpriteBatch();
+        uiCamera = new OrthographicCamera();
+        uiCamera.setToOrtho(false, Gdx.graphics.getWidth(), Gdx.graphics.getHeight());
+        uiCamera.update();
 
-        // create a Rectangle to logically represent the bucket
-        bucket = new Rectangle();
-        bucket.x = 800 / 2 - 64 / 2; // center the bucket horizontally
-        bucket.y = 20; // bottom left corner of the bucket is 20 pixels above the bottom screen edge
-        bucket.width = 64;
-        bucket.height = 64;
+        font = new BitmapFont(Gdx.files.internal("arial.fnt"));
 
-        // create the raindrops array and spawn the first raindrop
-        raindrops = new Array<Rectangle>();
-        spawnRaindrop();
+        background = new Texture("background.png");
+        ground = new TextureRegion(new Texture("ground.png"));
+        ceiling = new TextureRegion(ground);
+        ceiling.flip(true, true);
+
+        rock = new TextureRegion(new Texture("rock.png"));
+        rockDown = new TextureRegion(rock);
+        rockDown.flip(false, true);
+
+        Texture frame1 = new Texture("plane1.png");
+        frame1.setFilter(Texture.TextureFilter.Linear, Texture.TextureFilter.Linear);
+        Texture frame2 = new Texture("plane2.png");
+        Texture frame3 = new Texture("plane3.png");
+
+        ready = new TextureRegion(new Texture("ready.png"));
+        gameOver = new TextureRegion(new Texture("gameover.png"));
+
+        plane = new Animation<TextureRegion>(0.05f, new TextureRegion(frame1), new TextureRegion(frame2), new TextureRegion(frame3), new TextureRegion(frame2));
+        plane.setPlayMode(Animation.PlayMode.LOOP);
+
+        music = Gdx.audio.newMusic(Gdx.files.internal("music.mp3"));
+        music.setLooping(true);
+        music.play();
+
+        explode = Gdx.audio.newSound(Gdx.files.internal("explode.wav"));
+
+        resetWorld();
+    }
+
+    private void resetWorld() {
+        score = 0;
+        groundOffsetX = 0;
+        planePosition.set(PLANE_START_X, PLANE_START_Y);
+        planeVelocity.set(0, 0);
+        gravity.set(0, GRAVITY);
+        camera.position.x = 400;
+
+        rocks.clear();
+        for (int i = 0; i < 5; i++) {
+            boolean isDown = MathUtils.randomBoolean();
+            rocks.add(new Rock(700 + i * 200, isDown ? 480 - rock.getRegionHeight() : 0, isDown ? rockDown : rock));
+        }
+    }
+
+    private void updateWorld() {
+        float deltaTime = Gdx.graphics.getDeltaTime();
+        planeStateTime += deltaTime;
+
+        if (Gdx.input.justTouched()) {
+            if (gameState == GameState.Start) {
+                gameState = GameState.Running;
+            }
+            if (gameState == GameState.Running) {
+                planeVelocity.set(PLANE_VELOCITY_X, PLANE_JUMP_IMPULSE);
+            }
+            if (gameState == GameState.GameOver) {
+                gameState = GameState.Start;
+                resetWorld();
+            }
+        }
+
+        if (gameState != GameState.Start) planeVelocity.add(gravity);
+
+        planePosition.mulAdd(planeVelocity, deltaTime);
+
+        camera.position.x = planePosition.x + 350;
+        if (camera.position.x - groundOffsetX > ground.getRegionWidth() + 400) {
+            groundOffsetX += ground.getRegionWidth();
+        }
+
+        rect1.set(planePosition.x + 20, planePosition.y, plane.getKeyFrames()[0].getRegionWidth() - 20, plane.getKeyFrames()[0].getRegionHeight());
+        for (Rock r : rocks) {
+            if (camera.position.x - r.position.x > 400 + r.image.getRegionWidth()) {
+                boolean isDown = MathUtils.randomBoolean();
+                r.position.x += 5 * 200;
+                r.position.y = isDown ? 480 - rock.getRegionHeight() : 0;
+                r.image = isDown ? rockDown : rock;
+                r.counted = false;
+            }
+            rect2.set(r.position.x + (r.image.getRegionWidth() - 30) / 2 + 20, r.position.y, 20, r.image.getRegionHeight() - 10);
+            if (rect1.overlaps(rect2)) {
+                if (gameState != GameState.GameOver) explode.play();
+                gameState = GameState.GameOver;
+                planeVelocity.x = 0;
+            }
+            if (r.position.x < planePosition.x && !r.counted) {
+                score++;
+                r.counted = true;
+            }
+        }
+
+        if (planePosition.y < ground.getRegionHeight() - 20 ||
+                planePosition.y + plane.getKeyFrames()[0].getRegionHeight() > 480 - ground.getRegionHeight() + 20) {
+            if (gameState != GameState.GameOver) explode.play();
+            gameState = GameState.GameOver;
+            planeVelocity.x = 0;
+        }
+    }
+
+    private void drawWorld() {
+        camera.update();
+        batch.setProjectionMatrix(camera.combined);
+        batch.begin();
+        batch.draw(background, camera.position.x - background.getWidth() / 2, 0);
+        for (Rock rock : rocks) {
+            batch.draw(rock.image, rock.position.x, rock.position.y);
+        }
+        batch.draw(ground, groundOffsetX, 0);
+        batch.draw(ground, groundOffsetX + ground.getRegionWidth(), 0);
+        batch.draw(ceiling, groundOffsetX, 480 - ceiling.getRegionHeight());
+        batch.draw(ceiling, groundOffsetX + ceiling.getRegionWidth(), 480 - ceiling.getRegionHeight());
+        batch.draw(plane.getKeyFrame(planeStateTime), planePosition.x, planePosition.y);
+        batch.end();
+
+        batch.setProjectionMatrix(uiCamera.combined);
+        batch.begin();
+        if (gameState == GameState.Start) {
+            batch.draw(ready, Gdx.graphics.getWidth() / 2 - ready.getRegionWidth() / 2, Gdx.graphics.getHeight() / 2 - ready.getRegionHeight() / 2);
+        }
+        if (gameState == GameState.GameOver) {
+            batch.draw(gameOver, Gdx.graphics.getWidth() / 2 - gameOver.getRegionWidth() / 2, Gdx.graphics.getHeight() / 2 - gameOver.getRegionHeight() / 2);
+        }
+        if (gameState == GameState.GameOver || gameState == GameState.Running) {
+            font.draw(batch, "" + score, Gdx.graphics.getWidth() / 2, Gdx.graphics.getHeight() - 60);
+        }
+        batch.end();
     }
 
     @Override
     public void render() {
-        // clear the screen with a dark blue color. The
-        // arguments to clear are the red, green
-        // blue and alpha component in the range [0,1]
-        // of the color to be used to clear the screen.
-        ScreenUtils.clear(0, 0, 0.2f, 1);
+        Gdx.gl.glClearColor(1, 0, 0, 1);
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
 
-        // tell the camera to update its matrices.
-        camera.update();
-
-        // tell the SpriteBatch to render in the
-        // coordinate system specified by the camera.
-        batch.setProjectionMatrix(camera.combined);
-
-        // begin a new batch and draw the bucket and
-        // all drops
-        batch.begin();
-        batch.draw(bucketImage, bucket.x, bucket.y);
-        for (Rectangle raindrop : raindrops) {
-            batch.draw(dropImage, raindrop.x, raindrop.y);
-        }
-        batch.end();
-
-        // process user input
-        if (Gdx.input.isTouched()) {
-            Vector3 touchPos = new Vector3();
-            touchPos.set(Gdx.input.getX(), Gdx.input.getY(), 0);
-            camera.unproject(touchPos);
-            bucket.x = touchPos.x - 64 / 2;
-        }
-        if (Gdx.input.isKeyPressed(Input.Keys.LEFT)) bucket.x -= 200 * Gdx.graphics.getDeltaTime();
-        if (Gdx.input.isKeyPressed(Input.Keys.RIGHT)) bucket.x += 200 * Gdx.graphics.getDeltaTime();
-
-        // make sure the bucket stays within the screen bounds
-        if (bucket.x < 0) bucket.x = 0;
-        if (bucket.x > 800 - 64) bucket.x = 800 - 64;
-
-        // check if we need to create a new raindrop
-        if (TimeUtils.nanoTime() - lastDropTime > 1000000000) spawnRaindrop();
-
-        // move the raindrops, remove any that are beneath the bottom edge of
-        // the screen or that hit the bucket. In the latter case we play back
-        // a sound effect as well.
-        for (Iterator<Rectangle> iter = raindrops.iterator(); iter.hasNext(); ) {
-            Rectangle raindrop = iter.next();
-            raindrop.y -= 200 * Gdx.graphics.getDeltaTime();
-            if (raindrop.y + 64 < 0) iter.remove();
-            if (raindrop.overlaps(bucket)) {
-                dropSound.play();
-                iter.remove();
-            }
-        }
+        updateWorld();
+        drawWorld();
     }
 
-    @Override
-    public void dispose() {
-        dropImage.dispose();
-        bucketImage.dispose();
-        dropSound.dispose();
-        rainMusic.dispose();
-        batch.dispose();
+    static enum GameState {
+        Start, Running, GameOver
     }
 
-    private void spawnRaindrop() {
-        Rectangle raindrop = new Rectangle();
-        raindrop.x = MathUtils.random(0, 800 - 64);
-        raindrop.y = 480;
-        raindrop.width = 64;
-        raindrop.height = 64;
-        raindrops.add(raindrop);
-        lastDropTime = TimeUtils.nanoTime();
+    static class Rock {
+        Vector2 position = new Vector2();
+        TextureRegion image;
+        boolean counted;
+
+        public Rock(float x, float y, TextureRegion image) {
+            this.position.x = x;
+            this.position.y = y;
+            this.image = image;
+        }
     }
 }
